@@ -15,7 +15,8 @@
 ---
 
 ## 🛠 사용 기술 (Tech Stack)
-- **Language**: Python 3.x
+- **Language**: Python 3.13.2
+- **n8n** : 2.4.6
 - **UI Framework**: PyQt6 (또는 CustomTkinter)
 - **Database**: Neon (Serverless PostgreSQL)
 - **Libraries**:

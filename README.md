@@ -83,7 +83,7 @@ uvicorn api.main:app --reload
 
 ```bash
 python client/main.py
-
+streamlit run client/web_app.py
 ```
 
 ---

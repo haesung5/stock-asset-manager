@@ -1,5 +1,5 @@
 import yfinance as yf
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 import sys, os, requests
 
@@ -129,6 +129,24 @@ def record_trade(trade: TradeCreate):
         return {"status": "success", "message": f"{trade.stock_code} 매수 기록 완료"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+@app.post("/trades/sell")
+def record_sell_trade(trade: TradeCreate):
+    """주식 매도 기록을 DB에 저장합니다. (수량을 음수로 변환)"""
+    try:
+        # 매도이므로 수량을 음수(negative)로 강제로 변환
+        # abs()를 써서 양수로 만든 뒤 -를 붙이는 방식
+        sell_quantity = -abs(trade.quantity)
+
+        add_trade(
+            trade.stock_code, 
+            sell_quantity, 
+            trade.price, 
+            trade.currency
+        )
+        return {"status": "success", "message": f"{trade.stock_code} {trade.quantity}주 매도 기록 완료"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/market-list")
 def get_market_catalog():
@@ -143,52 +161,35 @@ def get_market_catalog():
     ]
 
 @app.get("/market/search")
-def search_stock(q: str):
-    # 1. 야후 파이낸스에서 실시간 검색 실행
-    # (한글 '카카오', 티커 '035720' 모두 야후 엔진이 처리합니다)
+def search_global_stocks(query: str):  # 'q' 대신 'query'로 변경하여 웹 앱과 매칭
     try:
-        search = yf.Search(q, max_results=8)
+        search = yf.Search(query, max_results=10)
         
         results = []
         for quote in search.quotes:
-            # 주식(EQUITY)이나 ETF인 경우만 추출
             if quote.get('quoteType') in ['EQUITY', 'ETF']:
                 symbol = quote['symbol']
-                
-                # 이름이 깨지거나 없을 경우를 대비한 처리
-                raw_name = quote.get('shortname') or quote.get('longname') or symbol
+                # 웹 앱에서 기대하는 'currency' 필드를 여기서 생성
+                currency = "KRW" if (".KS" in symbol or ".KQ" in symbol) else "USD"
                 
                 results.append({
                     "code": symbol,
-                    "name": raw_name,
-                    "currency": "KRW" if (".KS" in symbol or ".KQ" in symbol) else "USD"
+                    "name": quote.get('shortname') or quote.get('longname') or symbol,
+                    "currency": currency  # 이 필드가 있어야 웹 앱의 'Currency' 섹션이 작동함
                 })
-        
-        # 2. 검색 결과가 하나도 없다면? 
-        # 사용자가 티커를 정확히 입력했을 가능성을 대비해 직접 조회 시도
-        if not results and (q.upper().endswith(".KS") or q.upper().endswith(".KQ") or len(q) >= 4):
-            try:
-                t = yf.Ticker(q)
-                if t.fast_info.last_price > 0:
-                    results.append({
-                        "code": q.upper(),
-                        "name": t.info.get('shortName', q),
-                        "currency": "KRW" if (".KS" in q.upper() or ".KQ" in q.upper()) else "USD"
-                    })
-            except:
-                pass
-
         return results
     except Exception as e:
         print(f"Search Error: {e}")
         return []
+
+
     
 @app.get("/market/trending")
 def get_trending_stocks():
     try:
         # 1. 'stocks' 키워드로 검색하여 실제 활발한 종목들 추출
         search = yf.Search("stocks", max_results=30)
-        trending_tickers = [q['symbol'] for q in search.quotes if q.get('quoteType') == 'EQUITY']
+        trending_tickers = [q['symbol'] for q in search.quotes if q.get('quoteType') == 'EQUITY' or q.get('quoteType') == 'ETF']
         
         # 2. 만약 검색 결과가 적다면 미국 우량주 강제 포함 (보험용)
         top_us = ["AAPL", "TSLA", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "AMD"]

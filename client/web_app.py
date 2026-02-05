@@ -14,7 +14,7 @@ API_URL = "http://127.0.0.1:8000"
 st.title("🚀 주식 자산 관리 웹 대시보드")
 
 # 탭 생성
-tab_wallet, tab_market, tab_buy = st.tabs(["📊 내 잔고 현황", "🔍 전체 종목 시세", "🛒 종목 쇼핑 & 매수"])
+tab_wallet, tab_market, tab_buy = st.tabs(["📊 내 잔고 현황", "🔥 실시간 트렌딩 종목", "🛒 종목 쇼핑 & 매수"])
 
 # --- Tab 1: 내 자산 대시보드 ---
 with tab_wallet:
@@ -134,6 +134,63 @@ with tab_wallet:
                     "현재가": fmt, "전일가": fmt, "수익률(%)": "{:+.2f}%", "등락률(%)": "{:+.2f}%"
                 })
             st.dataframe(styled_df, width='stretch', hide_index=True)
+
+            # [개선] 매도 영역: 기본값 0 및 KRW 정수 처리
+            # [개선] st.form을 사용하여 버튼 누를 때만 새로고침되게 변경
+            with st.expander(f"📉 {curr} 종목 매도하기"):
+                # 1. 먼저 어떤 종목을 팔지 선택하게 합니다.
+                sellable_stocks = curr_df['종목명'].tolist()
+                selected_stock_name = st.selectbox("매도할 종목을 선택하세요", options=sellable_stocks, key=f"sel_{curr}")
+                
+                # 2. 선택된 종목의 코드를 먼저 찾습니다 (form 밖에서!)
+                target_idx = curr_df.index[curr_df['종목명'] == selected_stock_name][0]
+                target_code = holdings[target_idx]['stock_code']
+
+                # 3. 이제 안전하게 target_code를 key에 넣어서 폼을 생성합니다.
+                with st.form(key=f"sell_form_{curr}_{target_code}"):
+                    # 데이터 매칭 (이미 밖에서 찾았으므로 재사용 가능)
+                    target_row = curr_df.loc[target_idx]
+                    
+                    # 통화별 설정
+                    is_krw = (curr == "KRW")
+                    max_q = int(target_row['보유수량']) if is_krw else float(target_row['보유수량'])
+                    default_price = int(target_row['현재가']) if is_krw else float(target_row['현재가'])
+
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        s_qty = st.number_input(
+                            f"매도 수량 (최대 {max_q:,}주)" if is_krw else f"매도 수량 (최대 {max_q:.2f}주)", 
+                            min_value=0 if is_krw else 0.0, 
+                            max_value=max_q, 
+                            value=0 if is_krw else 0.0,
+                            step=1 if is_krw else 0.01,
+                            format="%d" if is_krw else "%.2f"
+                        )
+                    with c2:
+                        s_price = st.number_input(
+                            "매도 단가", 
+                            value=default_price, 
+                            step=1 if is_krw else 0.01,
+                            format="%d" if is_krw else "%.2f"
+                        )
+
+                    submit_sell = st.form_submit_button("🔥 매도 실행", use_container_width=True)
+
+                    if submit_sell:
+                        if s_qty > 0:
+                            sell_payload = {
+                                "stock_code": target_code,
+                                "quantity": s_qty,
+                                "price": s_price,
+                                "currency": curr
+                            }
+                            s_res = requests.post(f"{API_URL}/trades/sell", json=sell_payload)
+                            if s_res.status_code == 200:
+                                st.success(f"{selected_stock_name} 매도 완료!")
+                                st.rerun() # 여기서만 새로고침 발생
+                        else:
+                            st.warning("매도 수량을 0보다 크게 입력해 주세요.")
+            
             st.divider()
     else:
         st.info("보유 종목이 없습니다.")
@@ -148,7 +205,7 @@ with tab_market:
         trending_codes = trending_res.json() if trending_res.status_code == 200 else []
         
         # 한국 주식도 항상 보고 싶다면 여기에 추가
-        kr_codes = ["005930.KS", "000660.KS", "035420.KS", "005380.KS", "035720.KS"]
+        kr_codes = ["005930.KS", "000660.KS", "035420.KS", "005380.KS", "035720.KS", "373220.KS", "000270.KS", "207940.KS", "105560.KS", "247540.KQ"]
         total_codes = list(set(trending_codes + kr_codes))
         
         # 2. 상세 정보 호출
@@ -194,81 +251,78 @@ with tab_market:
             if curr == "USD":
                 st.warning("⚠️ 미국 주식 데이터를 가져오지 못했습니다. 서버 상태를 확인해 주세요.")
 
-# --- Tab 2: 실시간 종목 쇼핑 (매수) ---
+# --- Tab : 실시간 종목 쇼핑 (매수) ---
+# --- Tab : 실시간 종목 쇼핑 (매수) ---
 with tab_buy:
     st.subheader("🛍️ 종목 통합 검색 및 매수")
     
-    # 1. 통합 검색창
-    search_query = st.text_input("종목명 또는 티커를 입력하세요", placeholder="예: QQQ, 삼성, NVDA", key="total_search")
+    # 1. 통합 검색창 (하나만 남김)
+    search_query = st.text_input("종목명 또는 티커를 입력하세요", placeholder="예: QQQ, 005930.KS, NVDA", key="total_search")
 
     if search_query:
-        with st.spinner(f"'{search_query}' 관련 종목을 찾는 중..."):
-            # A. DB에서 검색
-            market_res = requests.get(f"{API_URL}/market/list")
-            db_stocks = market_res.json() if market_res.status_code == 200 else []
-            filtered_db = [s for s in db_stocks if search_query.lower() in s['name'].lower() or search_query.upper() in s['code'].upper()]
-
-            # B. 외부 API(yfinance)에서 연관 검색
-            api_res = requests.get(f"{API_URL}/market/search?query={search_query}")
-            api_stocks = api_res.json() if api_res.status_code == 200 else []
-
-            # C. 두 결과 합치기 (중복 제거)
-            combined_results = {s['code']: s for s in (filtered_db + api_stocks)}.values()
-
-        if combined_results:
-            # 사용자가 선택할 수 있게 Selectbox로 제공
-            options = {f"[{s['code']}] {s['name']}": s for s in combined_results}
-            selected_key = st.selectbox(f"검색 결과 ({len(combined_results)}건)", options=list(options.keys()))
-            selected_info = options[selected_key]
-
-            # 2. 선택된 종목의 현재가 자동 로딩
-            with st.spinner('실시간 시세 확인 중...'):
-                p_res = requests.get(f"{API_URL}/market/price/{selected_info['code']}")
-                if p_res.status_code == 200:
-                    price_data = p_res.json()
-                    live_price = price_data['price']
-                    
-                    st.markdown("---")
-                    col_info, col_val = st.columns([2, 1])
-                    with col_info:
-                        st.markdown(f"### {selected_info['name']}")
-                        st.caption(f"티커: {selected_info['code']} | 통화: {selected_info['currency']}")
-                    
-                    with col_val:
-                        # 1. KRW일 때 소수점 삭제 / 2. USD일 때 KRW 환산가 병기
-                        if selected_info['currency'] == "KRW":
-                            st.metric("현재가", f"{live_price:,.0f} 원")
-                        else:
-                            # USD 현재가 표시
-                            st.metric("현재가", f"{live_price:,.2f} USD")
-                            # 환율 적용한 KRW 가격 계산 및 표시 (작은 글씨)
-                            krw_price = live_price * exchange_rate
-                            st.caption(f"≈ {krw_price:,.0f} 원 (환율 적용)")
-
-                    # 3. 매수 폼 (가독성을 위해 숫자 입력칸도 포맷 변경)
-                    with st.form("buy_form_final"):
-                        # 통화별로 입력창 소수점 단위 조절
-                        step_val = 1.0 if selected_info['currency'] == "KRW" else 0.01
-                        format_val = "%.0f" if selected_info['currency'] == "KRW" else "%.2f"
-                        
-                        price_input = st.number_input("매수 가격", value=float(live_price), step=step_val, format=format_val)
-                        qty_input = st.number_input("매수 수량", min_value=0, value=0, step=1)
-                        
-                        if st.form_submit_button("🔥 매수 주문 실행"):
-                            if qty_input > 0:
-                                trade_data = {
-                                    "stock_code": selected_info['code'],
-                                    "quantity": qty_input,
-                                    "price": price_input,
-                                    "currency": selected_info['currency']
-                                }
-                                order_res = requests.post(f"{API_URL}/trades", json=trade_data)
-                                if order_res.status_code == 200:
-                                    st.success(f"✅ {selected_info['name']} 매수 완료!")
-                                    st.balloons()
-                            else:
-                                st.warning("수량을 입력하세요.")
-                else:
-                    st.error("시세를 가져올 수 없는 종목입니다.")
+        # 2글자 미만은 야후 API가 힘들어하므로 제한
+        if len(search_query) < 2:
+            st.warning("정확한 검색을 위해 2글자 이상 입력해주세요.")
         else:
-            st.warning("검색 결과가 없습니다.")
+            with st.spinner(f"'{search_query}' 시세 데이터 조회 중..."):
+                # 바로 외부 API(yfinance 검색용 서버 엔드포인트)만 호출
+                api_res = requests.get(f"{API_URL}/market/search?query={search_query}")
+                combined_results = api_res.json() if api_res.status_code == 200 else []
+
+            if combined_results:
+                # 사용자가 선택할 수 있게 Selectbox 제공
+                options = {f"[{s['code']}] {s['name']}": s for s in combined_results}
+                selected_key = st.selectbox(f"검색 결과 ({len(combined_results)}건)", options=list(options.keys()))
+                selected_info = options[selected_key]
+
+                # 2. 선택된 종목의 현재가 자동 로딩
+                with st.spinner('실시간 시세 확인 중...'):
+                    p_res = requests.get(f"{API_URL}/market/price/{selected_info['code']}")
+                    if p_res.status_code == 200:
+                        price_data = p_res.json()
+                        live_price = price_data['price']
+                        
+                        st.markdown("---")
+                        col_info, col_val = st.columns([2, 1])
+                        with col_info:
+                            st.markdown(f"### {selected_info['name']}")
+                            st.caption(f"티커: {selected_info['code']} | 통화: {selected_info['currency']}")
+                        
+                        with col_val:
+                            # 1. KRW일 때 소수점 삭제 / 2. USD일 때 KRW 환산가 병기
+                            if selected_info['currency'] == "KRW":
+                                st.metric("현재가", f"{live_price:,.0f} 원")
+                            else:
+                                # USD 현재가 표시
+                                st.metric("현재가", f"{live_price:,.2f} USD")
+                                # 환율 적용한 KRW 가격 계산 및 표시 (작은 글씨)
+                                krw_price = live_price * exchange_rate
+                                st.caption(f"≈ {krw_price:,.0f} 원 (환율 적용)")
+
+                        # 3. 매수 폼 (가독성을 위해 숫자 입력칸도 포맷 변경)
+                        with st.form("buy_form_final"):
+                            # 통화별로 입력창 소수점 단위 조절
+                            step_val = 1.0 if selected_info['currency'] == "KRW" else 0.01
+                            format_val = "%.0f" if selected_info['currency'] == "KRW" else "%.2f"
+                            
+                            price_input = st.number_input("매수 가격", value=float(live_price), step=step_val, format=format_val)
+                            qty_input = st.number_input("매수 수량", min_value=0, value=0, step=1)
+                            
+                            if st.form_submit_button("🔥 매수 주문 실행"):
+                                if qty_input > 0:
+                                    trade_data = {
+                                        "stock_code": selected_info['code'],
+                                        "quantity": qty_input,
+                                        "price": price_input,
+                                        "currency": selected_info['currency']
+                                    }
+                                    order_res = requests.post(f"{API_URL}/trades", json=trade_data)
+                                    if order_res.status_code == 200:
+                                        st.success(f"✅ {selected_info['name']} 매수 완료!")
+                                        st.balloons()
+                                else:
+                                    st.warning("수량을 입력하세요.")
+                    else:
+                        st.error("시세를 가져올 수 없는 종목입니다.")
+            else:
+                st.error("검색 결과가 없습니다. 티커를 확인해 보세요 (예: 005930.KS)")
